@@ -1,5 +1,4 @@
-﻿# Image-Generator - server
- you can get frontend at - https://github.com/user-no-18/Image-Generator-AI-client
+ note- you can get frontend at - https://github.com/user-no-18/Image-Generator-AI-client
 
 # 🖼 Image Generator
 
@@ -53,5 +52,6 @@ image-generator/
 │   ├─ .env
 │
 └─ README.md
+
 
 
