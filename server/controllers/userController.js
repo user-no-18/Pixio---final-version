@@ -1,15 +1,12 @@
-
 import userModel from "../models/userModel.js";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
-// import Razorpay from "razorpay";
-// import crypto from "crypto";
+import Razorpay from "razorpay";
+import crypto from "crypto";
 dotenv.config();
 
-
 const getTokenFromRequest = (req) => {
- 
   const authHeader = req.headers.authorization || req.headers.Authorization;
   if (authHeader && typeof authHeader === "string") {
     const parts = authHeader.split(" ");
@@ -17,9 +14,7 @@ const getTokenFromRequest = (req) => {
       return parts[1];
     }
   }
-
   if (req.headers.token) return req.headers.token;
-
   if (req.body && req.body.token) return req.body.token;
   return null;
 };
@@ -29,11 +24,9 @@ const verifyJwt = (token) => {
   try {
     return jwt.verify(token, process.env.JWT_SECRET);
   } catch (err) {
-   
     throw err;
   }
 };
-
 
 const registerUser = async (req, res) => {
   try {
@@ -41,7 +34,6 @@ const registerUser = async (req, res) => {
     if (!name || !email || !password) {
       return res.status(400).json({ success: false, message: "Missing details" });
     }
-
 
     const existing = await userModel.findOne({ email });
     if (existing) {
@@ -93,7 +85,6 @@ const loginUser = async (req, res) => {
   }
 };
 
-
 const userCredits = async (req, res) => {
   try {
     const token = getTokenFromRequest(req);
@@ -122,124 +113,126 @@ const userCredits = async (req, res) => {
   }
 };
 
+// Initialize Razorpay
+const razorpayInstance = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET,
+});
 
-// const razorpayInstance = new Razorpay({
-//   key_id: process.env.RAZORPAY_KEY_ID,
-//   key_secret: process.env.RAZORPAY_KEY_SECRET,
-// });
+// Plans map
+const PLANS = {
+  Basic: { price: 10, credits: 100 },
+  Advanced: { price: 50, credits: 500 },
+  Business: { price: 250, credits: 5000 },
+};
 
-// /* Plans map: keep this in sync with frontend (or move to config) */
-// const PLANS = {
-//   Basic: { price: 10, credits: 100 },
-//   Advanced: { price: 50, credits: 500 },
-//   Business: { price: 250, credits: 5000 },
-// };
+const paymentRazorpay = async (req, res) => {
+  try {
+    const { planId } = req.body;
+    if (!planId) return res.status(400).json({ success: false, message: "Missing planId" });
 
-// const paymentRazorpay = async (req, res) => {
-//   try {
-//     const { planId } = req.body;
-//     if (!planId) return res.status(400).json({ success: false, message: "Missing planId" });
+    const token = getTokenFromRequest(req);
+    if (!token) return res.status(401).json({ success: false, message: "No token provided" });
 
-//     const token = getTokenFromRequest(req);
-//     if (!token) return res.status(401).json({ success: false, message: "No token provided" });
+    let decoded;
+    try {
+      decoded = verifyJwt(token);
+    } catch (err) {
+      console.error("JWT verify failed (create order):", err.message);
+      return res.status(401).json({ success: false, message: "Invalid or expired token" });
+    }
 
-//     let decoded;
-//     try {
-//       decoded = verifyJwt(token);
-//     } catch (err) {
-//       console.error("JWT verify failed (create order):", err.message);
-//       return res.status(401).json({ success: false, message: "Invalid or expired token" });
-//     }
+    const userId = decoded.id;
+    const user = await userModel.findById(userId);
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
-//     const userId = decoded.id;
-//     const user = await userModel.findById(userId);
-//     if (!user) return res.status(404).json({ success: false, message: "User not found" });
+    const plan = PLANS[planId];
+    if (!plan) return res.status(400).json({ success: false, message: "Plan not found" });
 
-//     const plan = PLANS[planId];
-//     if (!plan) return res.status(400).json({ success: false, message: "Plan not found" });
+    const date = Date.now();
+    const transactionData = {
+      amount: plan.price * 100, // INR paise
+      currency: "INR",
+      receipt: `receipt_order_${date}`,
+      notes: {
+        userId: userId.toString(),
+        planId: planId,
+        credits: plan.credits.toString(),
+      },
+    };
 
-//     const date = Date.now();
-//     const transactionData = {
-//       amount: plan.price * 100, // INR paise
-//       currency: "INR",
-//       receipt: `receipt_order_${date}`,
-//       notes: {
-//         userId: userId.toString(),
-//         planId: planId,
-//         credits: plan.credits.toString(),
-//       },
-//     };
+    const order = await razorpayInstance.orders.create(transactionData);
 
-//     const order = await razorpayInstance.orders.create(transactionData);
+    return res.json({
+      success: true,
+      order,
+      key: process.env.RAZORPAY_KEY_ID,
+    });
+  } catch (error) {
+    console.error("Razorpay create order error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
 
-//     // Provide minimal order data and razorpay key id for frontend
-//     return res.json({
-//       success: true,
-//       order,
-//       key: process.env.RAZORPAY_KEY_ID,
-//     });
-//   } catch (error) {
-//     console.error("Razorpay create order error:", error);
-//     // If the error is due to Razorpay or auth, return 500
-//     return res.status(500).json({ success: false, message: error.message });
-//   }
-// };
+const verifyRazorpay = async (req, res) => {
+  try {
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({ success: false, message: "Missing payment verification fields" });
+    }
 
-// const verifyRazorpay = async (req, res) => {
-//   try {
-//     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
-//     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
-//       return res.status(400).json({ success: false, message: "Missing payment verification fields" });
-//     }
+    const token = getTokenFromRequest(req);
+    if (!token) return res.status(401).json({ success: false, message: "No token provided" });
 
-//     const token = getTokenFromRequest(req);
-//     if (!token) return res.status(401).json({ success: false, message: "No token provided" });
+    let decoded;
+    try {
+      decoded = verifyJwt(token);
+    } catch (err) {
+      console.error("JWT verify failed (verify payment):", err.message);
+      return res.status(401).json({ success: false, message: "Invalid or expired token" });
+    }
 
-//     let decoded;
-//     try {
-//       decoded = verifyJwt(token);
-//     } catch (err) {
-//       console.error("JWT verify failed (verify payment):", err.message);
-//       return res.status(401).json({ success: false, message: "Invalid or expired token" });
-//     }
+    // Verify signature
+    const orderData = razorpay_order_id + "|" + razorpay_payment_id;
+    const expectedSignature = crypto
+      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+      .update(orderData.toString())
+      .digest("hex");
 
-//     // Verify signature
-//     const orderData = razorpay_order_id + "|" + razorpay_payment_id;
-//     const expectedSignature = crypto
-//       .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
-//       .update(orderData.toString())
-//       .digest("hex");
+    const isAuthentic = expectedSignature === razorpay_signature;
 
-//     const isAuthentic = expectedSignature === razorpay_signature;
+    if (!isAuthentic) {
+      console.warn("Razorpay signature mismatch", { expectedSignature, razorpay_signature });
+      return res.status(400).json({ success: false, message: "Payment verification failed (signature mismatch)" });
+    }
 
-//     if (!isAuthentic) {
-//       console.warn("Razorpay signature mismatch", { expectedSignature, razorpay_signature });
-//       return res.status(400).json({ success: false, message: "Payment verification failed (signature mismatch)" });
-//     }
+    // Fetch order details to read notes (planId, credits)
+    const order = await razorpayInstance.orders.fetch(razorpay_order_id);
+    const planId = order?.notes?.planId;
+    const creditsToAdd = parseInt(order?.notes?.credits || "0", 10);
 
-//     // Fetch order details to read notes (planId, credits)
-//     const order = await razorpayInstance.orders.fetch(razorpay_order_id);
-//     const planId = order?.notes?.planId;
-//     const creditsToAdd = parseInt(order?.notes?.credits || "0", 10);
+    const userId = decoded.id;
+    const user = await userModel.findById(userId);
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
-//     const userId = decoded.id;
-//     const user = await userModel.findById(userId);
-//     if (!user) return res.status(404).json({ success: false, message: "User not found" });
+    // Update credit balance
+    const updatedUser = await userModel.findByIdAndUpdate(
+      userId, 
+      { $inc: { creditBalance: creditsToAdd } }, 
+      { new: true }
+    );
 
-//     // Update credit balance
-//     const updatedUser = await userModel.findByIdAndUpdate(userId, { $inc: { creditBalance: creditsToAdd } }, { new: true });
+    return res.json({
+      success: true,
+      message: "Payment verified successfully",
+      credits: updatedUser.creditBalance,
+      creditsAdded: creditsToAdd,
+      planId,
+    });
+  } catch (error) {
+    console.error("Verify Razorpay Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
 
-//     return res.json({
-//       success: true,
-//       message: "Payment verified successfully",
-//       credits: updatedUser.creditBalance,
-//       creditsAdded: creditsToAdd,
-//       planId,
-//     });
-//   } catch (error) {
-//     console.error("Verify Razorpay Error:", error);
-//     return res.status(500).json({ success: false, message: error.message });
-//   }
-// };
-
-export { registerUser, loginUser, userCredits };
+export { registerUser, loginUser, userCredits, paymentRazorpay, verifyRazorpay };
