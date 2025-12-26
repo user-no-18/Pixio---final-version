@@ -4,6 +4,7 @@ import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
 import Razorpay from "razorpay";
 import crypto from "crypto";
+import transactionModel from "../models/transactionModel.js"
 dotenv.config();
 
 const getTokenFromRequest = (req) => {
@@ -32,12 +33,16 @@ const registerUser = async (req, res) => {
   try {
     const { name, email, password } = req.body;
     if (!name || !email || !password) {
-      return res.status(400).json({ success: false, message: "Missing details" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Missing details" });
     }
 
     const existing = await userModel.findOne({ email });
     if (existing) {
-      return res.status(400).json({ success: false, message: "Email already registered" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Email already registered" });
     }
 
     const salt = await bcrypt.genSalt(10);
@@ -46,7 +51,9 @@ const registerUser = async (req, res) => {
     const newUser = new userModel({ name, email, password: hashedPassword });
     const user = await newUser.save();
 
-    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "7d" });
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
+      expiresIn: "7d",
+    });
 
     return res.status(201).json({
       success: true,
@@ -63,16 +70,26 @@ const loginUser = async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) {
-      return res.status(400).json({ success: false, message: "Missing details" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Missing details" });
     }
 
     const user = await userModel.findOne({ email });
-    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+    if (!user)
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
 
     const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(401).json({ success: false, message: "Invalid credentials" });
+    if (!isMatch)
+      return res
+        .status(401)
+        .json({ success: false, message: "Invalid credentials" });
 
-    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "7d" });
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
+      expiresIn: "7d",
+    });
 
     return res.json({
       success: true,
@@ -88,19 +105,27 @@ const loginUser = async (req, res) => {
 const userCredits = async (req, res) => {
   try {
     const token = getTokenFromRequest(req);
-    if (!token) return res.status(401).json({ success: false, message: "No token provided" });
+    if (!token)
+      return res
+        .status(401)
+        .json({ success: false, message: "No token provided" });
 
     let decoded;
     try {
       decoded = verifyJwt(token);
     } catch (err) {
       console.error("JWT verify failed (credits):", err.message);
-      return res.status(401).json({ success: false, message: "Invalid or expired token" });
+      return res
+        .status(401)
+        .json({ success: false, message: "Invalid or expired token" });
     }
 
     const userId = decoded.id;
     const user = await userModel.findById(userId);
-    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+    if (!user)
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
 
     return res.json({
       success: true,
@@ -119,7 +144,7 @@ const razorpayInstance = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
 
-// Plans map
+
 const PLANS = {
   Basic: { price: 10, credits: 100 },
   Advanced: { price: 50, credits: 500 },
@@ -129,29 +154,36 @@ const PLANS = {
 const paymentRazorpay = async (req, res) => {
   try {
     const { planId } = req.body;
-    if (!planId) return res.status(400).json({ success: false, message: "Missing planId" });
-
+    
     const token = getTokenFromRequest(req);
-    if (!token) return res.status(401).json({ success: false, message: "No token provided" });
+    if (!token)
+      return res
+        .status(401)
+        .json({ success: false, message: "No token provided" });
 
     let decoded;
     try {
       decoded = verifyJwt(token);
     } catch (err) {
-      console.error("JWT verify failed (create order):", err.message);
-      return res.status(401).json({ success: false, message: "Invalid or expired token" });
+      console.error("Jwt verification failed", err.message);
+      return res
+        .status(401)
+        .json({ success: false, message: "Invalid or expired token" });
     }
 
     const userId = decoded.id;
     const user = await userModel.findById(userId);
-    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+    if (!user)
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
 
     const plan = PLANS[planId];
-    if (!plan) return res.status(400).json({ success: false, message: "Plan not found" });
+    
 
     const date = Date.now();
     const transactionData = {
-      amount: plan.price * 100, // INR paise
+      amount: plan.price * 100, 
       currency: "INR",
       receipt: `receipt_order_${date}`,
       notes: {
@@ -162,6 +194,29 @@ const paymentRazorpay = async (req, res) => {
     };
 
     const order = await razorpayInstance.orders.create(transactionData);
+
+    // This is temporary  block to prevent misuse of test mode .
+const TEST_MODE_ONE_PURCHASE_PER_DAY = true;
+
+if (TEST_MODE_ONE_PURCHASE_PER_DAY) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const alreadyPurchased = await transactionModel.findOne({
+    userId,
+    date: { $gte: today },
+    payment: true,
+  });
+
+  if (alreadyPurchased) {
+    return res.status(400).json({
+      success: false,
+      message: "Only one purchase allowed per day",
+    });
+  }
+}
+//upto this
+
 
     return res.json({
       success: true,
@@ -176,49 +231,105 @@ const paymentRazorpay = async (req, res) => {
 
 const verifyRazorpay = async (req, res) => {
   try {
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } =
+      req.body;
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
-      return res.status(400).json({ success: false, message: "Missing payment verification fields" });
+      return res.status(400).json({
+        success: false,
+        message: "Missing payment verification fields",
+      });
     }
 
     const token = getTokenFromRequest(req);
-    if (!token) return res.status(401).json({ success: false, message: "No token provided" });
+    if (!token)
+      return res
+        .status(401)
+        .json({ success: false, message: "No token provided" });
 
     let decoded;
     try {
       decoded = verifyJwt(token);
     } catch (err) {
-      console.error("JWT verify failed (verify payment):", err.message);
-      return res.status(401).json({ success: false, message: "Invalid or expired token" });
+      return res
+        .status(401)
+        .json({ success: false, message: "Invalid or expired token" });
     }
 
-    // Verify signature
     const orderData = razorpay_order_id + "|" + razorpay_payment_id;
     const expectedSignature = crypto
       .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
       .update(orderData.toString())
       .digest("hex");
 
-    const isAuthentic = expectedSignature === razorpay_signature;
-
-    if (!isAuthentic) {
-      console.warn("Razorpay signature mismatch", { expectedSignature, razorpay_signature });
-      return res.status(400).json({ success: false, message: "Payment verification failed (signature mismatch)" });
+    if (expectedSignature !== razorpay_signature) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment verification failed (signature mismatch)",
+      });
     }
-
-    // Fetch order details to read notes (planId, credits)
-    const order = await razorpayInstance.orders.fetch(razorpay_order_id);
-    const planId = order?.notes?.planId;
-    const creditsToAdd = parseInt(order?.notes?.credits || "0", 10);
 
     const userId = decoded.id;
     const user = await userModel.findById(userId);
-    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+    if (!user)
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+// temporary block I will modify it later if Website verified for live mode
+    const TEST_MODE_SINGLE_CREDIT = true;
+    const TEST_MODE_ONE_PURCHASE_PER_DAY = true;
 
-    // Update credit balance
+    if (TEST_MODE_ONE_PURCHASE_PER_DAY) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const alreadyPurchased = await transactionModel.findOne({
+        userId,
+        date: { $gte: today },
+        payment: true,
+      });
+
+      if (alreadyPurchased) {
+        return res.status(400).json({
+          success: false,
+          message: "Only one purchase allowed per day",
+        });
+      }
+    }
+
+    const existingTxn = await transactionModel.findOne({
+      razorpayPaymentId: razorpay_payment_id,
+    });
+
+    if (existingTxn) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment already processed",
+      });
+    }
+
+    const order = await razorpayInstance.orders.fetch(razorpay_order_id);
+    const planId = order?.notes?.planId;
+
+    let creditsToAdd = parseInt(order?.notes?.credits || "0", 10);
+
+    //temporary 
+    if (TEST_MODE_SINGLE_CREDIT) {
+      creditsToAdd = 1;
+    }
+
+    await transactionModel.create({
+      userId,
+      plan: planId,
+      amount: order.amount,
+      credits: creditsToAdd,
+      razorpayOrderId: razorpay_order_id,
+      razorpayPaymentId: razorpay_payment_id,
+      payment: true,
+    });
+
     const updatedUser = await userModel.findByIdAndUpdate(
-      userId, 
-      { $inc: { creditBalance: creditsToAdd } }, 
+      userId,
+      { $inc: { creditBalance: creditsToAdd } },
       { new: true }
     );
 
@@ -230,9 +341,15 @@ const verifyRazorpay = async (req, res) => {
       planId,
     });
   } catch (error) {
-    console.error("Verify Razorpay Error:", error);
     return res.status(500).json({ success: false, message: error.message });
   }
 };
 
-export { registerUser, loginUser, userCredits, paymentRazorpay, verifyRazorpay };
+
+export {
+  registerUser,
+  loginUser,
+  userCredits,
+  paymentRazorpay,
+  verifyRazorpay,
+};
